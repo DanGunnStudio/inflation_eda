@@ -1,0 +1,50 @@
+---
+title: "Inflation_eda"
+author: "Dan Gunn"
+date: "2024-02-15"
+output: html_document
+---
+##Packages
+```{r echo=FALSE}
+library(tidyverse)
+library(readr)
+```
+
+##Loading data
+
+```{r}
+
+ppi_data_raw <- read_csv("raw_data/1_PCE PI All Items and Core 2020-Sept 2022/Data-Table 1.csv", 
+     col_types = cols(...1 = col_date(format = "%Y-%m-%d"), 
+         `All Items PCE PI...2` = col_number(), 
+        `Core PCE PI...3` = col_number(), 
+         `All Items PCE PI...4` = col_number(), 
+         `Core PCE PI...5` = col_number(), 
+         `All Items PCE PI Month` = col_number(), 
+         `Core PCE PI Month` = col_number(), 
+         `All Items Annual` = col_number(), 
+         `Core PCE Annual` = col_number())) %>%
+  rename(date=...1,
+         all_items_x12=`All Items PCE PI...2`,
+         core_x12 = `Core PCE PI...3`,
+         all_items_pcepi = `All Items PCE PI...4`,
+         core_items_pcepi = `Core PCE PI...5`,
+         all_items_monthly = `All Items PCE PI Month`,
+         core_items_monthly = `Core PCE PI Month`,
+         all_items_annual = `All Items Annual`,
+         core_annual = `Core PCE Annual`)
+```
+
+
+
+```{r}
+summary(ppi_data_raw)
+names(ppi_data_raw)
+```
+ggplot(data=ppi_data_raw)
+```{r}
+ggplot(data=ppi_data_raw)+
+  geom_line(aes(x=date, y = all_items_pcepi))+
+  geom_line(aes(x=date, y = core_items_pcepi),
+            color= "blue")
+```
