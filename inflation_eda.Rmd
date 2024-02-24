@@ -8,43 +8,309 @@ output: html_document
 ```{r echo=FALSE}
 library(tidyverse)
 library(readr)
+library(lubridate)
+library(slider) #for moving averages
 ```
 
-##Loading data
+###Loading data
+
+##PCEPI data
+Loading data and renaming columns.
+PCEPI begins at 100 in base year 2017
+
+Suggested citation: U.S. Bureau of Economic Analysis, "Table 2.8.7. Percent Change From Preceding Period in Prices for Personal Consumption Expenditures by Major Type of Product, Monthly" (accessed Saturday, February 17, 2024).
+
+```{r echo=FALSE}
+
+pcepi_raw_df <- read_csv("raw_data/PCEPI_Numbers 2019-2023/pcepi-Table 1.csv")
+
+#merging month and year together
+pcepi_df<- pcepi_raw_df %>%
+  mutate(month_num = match(tolower(Month), tolower(month.abb)), # Convert month names to numbers
+    date = make_date(Year, month_num, 1) # Create a date with the first day of each month
+  )%>%
+  select(-Year, -Month, -month_num)
+
+```
+Adding the monthly percent change
+```{r}
+pcepi_df <- pcepi_df %>% 
+  mutate(all_items_monthly = (all_items - lag(all_items)) / lag(all_items),
+         core_items_monthly = (core_items - lag(core_items)) / lag(core_items)) %>% 
+  mutate(all_items_sma = slide_dbl(all_items_monthly, mean, .before = 3, .complete = TRUE),
+         core_items_sma = slide_dbl(core_items_monthly, mean, .before = 3, .complete = TRUE))
+
+```
+
+##PPI
+Reading in PPI data and changing column names. 
++ Adding a monthly percent change column.
+PPI begins at 100 in base year 2012
+
+```{r echo=FALSE}
+ppi_data_raw <- read_csv("raw_data/PPI/BLS Data Series-1-Table 1.csv")
+
+long_ppi_data <-ppi_data_raw %>%
+  gather(key = "Month", value = "Value", -Year) %>%
+  mutate(
+    Month = match(Month, month.abb), # Convert month abbreviations to numbers
+    Date = as.Date(paste(Year, Month, "01", sep = "-")) # Merge Year and Month into a Date
+  ) %>%
+  select(Date, Value) %>%
+  arrange(Date)# Select only the columns you want
+
+```
+
 
 ```{r}
+summary(long_ppi_data)
+head(long_ppi_data)
+```
+Adding the monthly percent change
+```{r}
+long_ppi_data <- long_ppi_data %>% 
+  mutate(ppi_monthly = (Value - lag(Value)) / lag(Value))%>%
+  mutate(ppi_sma = slide_dbl(ppi_monthly, mean, .before = 3, .complete = TRUE)) %>%
+  rename(date = Date)
 
-ppi_data_raw <- read_csv("raw_data/1_PCE PI All Items and Core 2020-Sept 2022/Data-Table 1.csv", 
-     col_types = cols(...1 = col_date(format = "%Y-%m-%d"), 
-         `All Items PCE PI...2` = col_number(), 
-        `Core PCE PI...3` = col_number(), 
-         `All Items PCE PI...4` = col_number(), 
-         `Core PCE PI...5` = col_number(), 
-         `All Items PCE PI Month` = col_number(), 
-         `Core PCE PI Month` = col_number(), 
-         `All Items Annual` = col_number(), 
-         `Core PCE Annual` = col_number())) %>%
-  rename(date=...1,
-         all_items_x12=`All Items PCE PI...2`,
-         core_x12 = `Core PCE PI...3`,
-         all_items_pcepi = `All Items PCE PI...4`,
-         core_items_pcepi = `Core PCE PI...5`,
-         all_items_monthly = `All Items PCE PI Month`,
-         core_items_monthly = `Core PCE PI Month`,
-         all_items_annual = `All Items Annual`,
-         core_annual = `Core PCE Annual`)
+```
+## CPI
+Adding in the Consumer Price Index
+All items in U.S. city average, all urban consumers, seasonally adjusted
+Series ID	:	CUSR0000SA0
+Seasonality	:	Seasonally Adjusted
+Base year of 1984
+
+```{r echo = FALSE}
+cpi_raw_df <- read_csv("raw_data/DataFinder-20240217201453/cpi-Table 1.csv") %>%
+  select_if(~ any(!is.na(.)))
+
+cpi_df <- cpi_raw_df %>%
+  mutate(date = as.Date(paste(Year, Month, "1", sep = "-"), format = "%Y-%m-%d")) %>%
+  select(-Year, -Month, -Label)%>%
+  rename( cpi= Cpi)
+
+cpi_df <- cpi_df %>%
+  mutate(cpi_monthly = (cpi - lag(cpi)) / lag(cpi))%>%
+  mutate(cpi_sma = slide_dbl(cpi_monthly, mean, .before = 3, .complete = TRUE))
+```
+Creating a normalized version of the indexes in order to plot them together.
+
+```{r}
+all_sets_df <- merge(long_ppi_data, pcepi_df, by = "date")
+
+all_sets_df <- merge(all_sets_df, cpi_df, by = "date")
+
+# base_ppi <- all_sets_df$Value[all_sets_df$date == as.Date('2019-01-01')]
+# base_all <- all_sets_df$all_items[all_sets_df$date == as.Date('2019-01-01')]
+# base_core <- all_sets_df$core_items[all_sets_df$date == as.Date('2019-01-01')]
+# base_cpi <- all_sets_df$cpi[all_sets_df$date == as.Date('2019-01-01')]
+
+specific_date <- as.Date('2019-01-01')
+
+base_values <- all_sets_df %>%
+  filter(date == specific_date) %>%
+  summarise(across(c(Value, all_items, core_items, cpi), ~ ifelse(is.na(.), NA_real_, .))) %>%
+  unlist()
+
+all_sets_df <- all_sets_df %>%
+  mutate(across(c(Value, all_items, core_items, cpi),
+                ~ . - base_values[cur_column()],
+                .names = 'zero_based_{.col}')) %>%
+  filter(!if_any(c(zero_based_Value, zero_based_all_items, zero_based_core_items, zero_based_cpi), is.na))
+
+
+all_sets_df <-all_sets_df %>%
+  mutate(ppi_norm = (Value - min(Value)) / (max(Value) - min(Value)),
+         all_items_norm = (all_items - min(all_items)) / (max(all_items) - min(all_items)),
+         core_norm = (core_items - min(core_items)) / (max(core_items) - min(core_items)),
+         cpi_norm = (cpi - min(cpi)) / (max(cpi) - min(cpi)))
+         
+write_csv(all_sets_df, "clean_data/all_sets.csv")
 ```
 
+Plotting with the normalized values of the index.
+
+```{r}
+ggplot(data=all_sets_df)+
+  geom_line(aes(x=date, y = all_items_norm))+
+  geom_line(aes(x=date, y = core_norm),
+            color= "blue") +
+  geom_line(aes(x=date, y = ppi_norm),
+            color = "red")+
+  geom_line(aes(x = date, y = cpi_norm),
+            color = "darkgreen")+
+  theme_minimal()
+```
+
+```{r}
+ggplot(data=all_sets_df)+
+  geom_line(aes(x=date, y = zero_based_all_items))+
+  geom_line(aes(x=date, y = zero_based_core_items),
+            color= "blue") +
+  geom_line(aes(x=date, y = zero_based_Value),
+            color = "red")+
+  geom_line(aes(x = date, y = zero_based_cpi),
+            color = "darkgreen")+
+  theme_minimal()
+```
 
 
 ```{r}
-summary(ppi_data_raw)
-names(ppi_data_raw)
+ggplot(data=pcepi_df)+
+  geom_line(aes(x=date, y = all_items_monthly*100))+
+  geom_line(aes(x=date, y = core_items_monthly*100),
+            color= "blue")+
+   geom_line(data=long_ppi_data, 
+             aes(x=date, y = ppi_monthly*100),
+             color = "red")+
+   geom_line(data = cpi_df,
+            aes(x = date, y = cpi_monthly*100),
+            color = "darkgreen")+
+  theme_minimal()
 ```
-ggplot(data=ppi_data_raw)
+
+I should do a moving average of these numbers to smooth them out a bit. 
+
 ```{r}
-ggplot(data=ppi_data_raw)+
-  geom_line(aes(x=date, y = all_items_pcepi))+
-  geom_line(aes(x=date, y = core_items_pcepi),
-            color= "blue")
+ggplot(data=pcepi_df)+
+  geom_line(aes(x=date, y = all_items_sma*100))+
+  geom_line(aes(x=date, y = core_items_sma*100),
+            color= "blue",
+            size= 1,
+            alpha = 0.5)+
+   geom_line(data=long_ppi_data, 
+             aes(x=date, y = ppi_sma*100),
+             color = "red")+
+   geom_line(data = cpi_df,
+            aes(x = date, y = cpi_sma*100),
+            color = "darkgreen")+
+  theme_minimal()
 ```
+Maybe add at Smoothed Moving Average (smma)
+
+
+##Correlation Testing
+
+```{r}
+#PPI to PCEPI Cross-Correlation Function CCF
+ccf_values_ppi_pcepi = ccf(long_ppi_data$Value, pcepi_df$core_items, lag.max = 12, main = "Cross-Correlation Function CCF")
+
+ccf_values_ppi_pcepi
+```
+
+```{r}
+#PPI to CPI Cross-Correlation Function CCF
+ccf_values_ppi_cpi = ccf(long_ppi_data$Value, cpi_df$cpi, lag.max = 12, main = "Cross-Correlation Function CCF")
+
+ccf_values_ppi_cpi
+```
+
+
+#Granger Causality testing to see if the PPI really predicts other inflation measures.
+```{r}
+library(lmtest) #for granger testing
+granger_result <- grangertest(pcepi_df$core_items ~ long_ppi_data$Value, order = 1) # 'order' is the number of lags to include
+
+# View the results
+print(granger_result)
+```
+## Akaike Information Criterion (AIC)
+Trying to see the optimal order number via Akaike Information Criterion (AIC)
+
+```{r}
+combined_df <- merge(long_ppi_data, pcepi_df, by = "date")
+# Placeholder for AIC values and corresponding lags
+aic_values <- setNames(rep(NA, 6), 1:6)
+
+for (i in 1:6) {
+  # Dynamically create 'lagged_Value' within the loop to reflect the current lag being tested
+  temp_df <- combined_df %>%
+    mutate(lagged_Value = lag(Value, i))
+
+  model <- lm(core_items ~ lagged_Value + lag(core_items, i), data = temp_df)
+  aic_values[i] <- AIC(model)
+}
+
+# Identify the best lag
+best_lag <- which.min(aic_values)
+best_aic <- min(aic_values)
+
+print(paste("Best lag for Value and core_items:", best_lag, "with AIC:", best_aic))
+```
+##Results
+The best lag is 1. 
+The result implies that the most recent past value of PPI (lag of 1 month) has the most significant predictive power on core inflation items. This suggests that changes in PPI quickly reflect or predict changes in core inflation, with the strongest relationship occurring on a month-to-month basis.
+
+Short-term Dynamics:
+Since the optimal lag is 1 month, it indicates short-term dynamics between PPI and core inflation items. The PPI's influence on core inflation items is immediate and most pronounced in the following month, highlighting the responsiveness of core inflation to producer price changes within a short time frame.
+
+```{r}
+library(lmtest) #for granger testing
+granger_result_cpi <- grangertest(cpi_df$cpi ~ long_ppi_data$Value, order = 12) # 'order' is the number of lags to include
+
+# View the results
+print(granger_result_cpi)
+```
+It also predicts CPI
+
+```{r}
+lags <- 1:12
+p_values <- c(0.00003602, 0.01117, 0.0002295, 0.002702, 0.005492, 0.009191, 
+              0.009291,0.005237, 0.007687,0.007339,0.02733, 0.05778    ) #p-values for each lag
+significance_levels <- ifelse(p_values < 0.05, "Significant", "Not Significant")
+
+# Creating a data frame for plotting
+data_for_plot <- data.frame(lags, p_values, significance_levels)
+
+# Plotting using ggplot2
+library(ggplot2)
+
+ggplot(data_for_plot, aes(x = lags, y = p_values, color = significance_levels)) +
+  geom_point() +
+  geom_line(aes(group = 1)) +
+  scale_y_continuous(trans = 'reverse') + # Optional: Reverse scale for p-values to have lower values at the top
+  labs(x = "Lag", y = "P-Value", title = "Granger Causality Test Results by Lag") +
+  theme_minimal() +
+  scale_color_manual(values = c("Significant" = "red", "Not Significant" = "blue")) +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "black") +
+  annotate("text", x = max(lags) - 1, y = 0.05, label = "Significance Threshold (0.05)", hjust = 1)
+```
+
+##Working to predict the CPI or PCEPI from the PPI
+3 month lag time. 
+
+```{r}
+# Create a lagged PPI column for 6 months prior
+combined_df <- combined_df %>%
+  arrange(date) %>%
+  mutate(lagged_PPI_3m = lag(Value, 3),
+         lagged_PPI_2m = lag(Value, 2),
+         lagged_PPI_6m = lag(Value, 6))
+
+# Split the data into training and test sets
+# Assuming the test set starts from January 2022
+training_set <- combined_df %>% filter(date < as.Date("2022-01-01"))
+test_set <- combined_df %>% filter(date >= as.Date("2022-01-01"))
+
+# Fit a model using the training set
+model <- lm(core_items ~ lagged_PPI_6m + lagged_PPI_3m, data = training_set)
+
+# Generate predictions for the test set
+test_set <- test_set %>%
+  mutate(predicted_core_items = predict(model, newdata = test_set))
+
+# Combine the actual and predicted values for visualization
+visualization_data <- test_set %>%
+  select(date, core_items, predicted_core_items)
+
+# Visualize the actual vs. predicted core inflation
+ggplot(visualization_data, aes(x = date)) +
+  geom_line(aes(y = core_items, color = "Actual")) +
+  geom_line(aes(y = predicted_core_items, color = "Predicted")) +
+  labs(title = "PPI Predicted vs Actual Core Inflation",
+       y = "Core Inflation Index",
+       color = "Legend") +
+  theme_minimal()
+```
+
