@@ -22,21 +22,19 @@ Suggested citation: U.S. Bureau of Economic Analysis, "Table 2.8.7. Percent Chan
 
 ```{r echo=FALSE}
 
-pcepi_raw_df <- read_csv("raw_data/PCEPI_Numbers 2019-2023/pcepi-Table 1.csv")
+pcepi_raw_df <- read_csv("raw_data/New PCEPI_2010-2023_PercentMonthly/Sheet 2-Table 1.csv")
 
 #merging month and year together
 pcepi_df<- pcepi_raw_df %>%
-  mutate(month_num = match(tolower(Month), tolower(month.abb)), # Convert month names to numbers
-    date = make_date(Year, month_num, 1) # Create a date with the first day of each month
+  mutate(month_num = match(tolower(month), tolower(month.abb)), # Convert month names to numbers
+    date = make_date(year, month_num, 1) # Create a date with the first day of each month
   )%>%
-  select(-Year, -Month, -month_num)
+  select(-year, -month, -month_num)
 
 ```
 Adding the monthly percent change
 ```{r}
 pcepi_df <- pcepi_df %>% 
-  mutate(all_items_monthly = (all_items - lag(all_items)) / lag(all_items),
-         core_items_monthly = (core_items - lag(core_items)) / lag(core_items)) %>% 
   mutate(all_items_sma = slide_dbl(all_items_monthly, mean, .before = 3, .complete = TRUE),
          core_items_sma = slide_dbl(core_items_monthly, mean, .before = 3, .complete = TRUE))
 
@@ -48,30 +46,17 @@ Reading in PPI data and changing column names.
 PPI begins at 100 in base year 2012
 
 ```{r echo=FALSE}
-ppi_data_raw <- read_csv("raw_data/PPI/BLS Data Series-1-Table 1.csv")
+ppi_data_raw <- read_csv("raw_data/New PPI_2010_2023.csv")
 
-long_ppi_data <-ppi_data_raw %>%
-  gather(key = "Month", value = "Value", -Year) %>%
-  mutate(
-    Month = match(Month, month.abb), # Convert month abbreviations to numbers
-    Date = as.Date(paste(Year, Month, "01", sep = "-")) # Merge Year and Month into a Date
-  ) %>%
-  select(Date, Value) %>%
-  arrange(Date)# Select only the columns you want
-
-```
-
-
-```{r}
-summary(long_ppi_data)
-head(long_ppi_data)
-```
-Adding the monthly percent change
-```{r}
-long_ppi_data <- long_ppi_data %>% 
-  mutate(ppi_monthly = (Value - lag(Value)) / lag(Value))%>%
-  mutate(ppi_sma = slide_dbl(ppi_monthly, mean, .before = 3, .complete = TRUE)) %>%
-  rename(date = Date)
+ppi_df <-ppi_data_raw %>%
+  mutate(month = as.integer(sub("M", "", Period)), # Remove 'M' and convert to integer
+         date = make_date(year, month, 1)) %>%
+  rename(ppi_1mon = '1mon',
+         ppi_3mon = '3mon',
+         ppi_12mon = '12mon',
+         ppi_3mon_annualized = '3mo_annualized' )%>%
+  mutate(ppi_sma = slide_dbl(ppi_1mon, mean, .before = 3, .complete = TRUE)) %>%
+  select(-year, -Period, -Label, -month)
 
 ```
 ## CPI
@@ -82,22 +67,27 @@ Seasonality	:	Seasonally Adjusted
 Base year of 1984
 
 ```{r echo = FALSE}
-cpi_raw_df <- read_csv("raw_data/DataFinder-20240217201453/cpi-Table 1.csv") %>%
+cpi_raw_df <- read_csv("raw_data/New_CPI_2010_2023.csv") %>%
   select_if(~ any(!is.na(.)))
 
 cpi_df <- cpi_raw_df %>%
-  mutate(date = as.Date(paste(Year, Month, "1", sep = "-"), format = "%Y-%m-%d")) %>%
-  select(-Year, -Month, -Label)%>%
-  rename( cpi= Cpi)
+  mutate(month = as.integer(sub("M", "", Period)), # Remove 'M' and convert to integer
+         date = make_date(Year, month, 1)) %>%
+  rename(cpi_1mon = '1mon',
+         cpi_3mon = '3mon',
+         cpi_12mon = '12mon',
+         cpi_3mon_annualized = '3mon_annualized' )%>%
+  mutate(cpi_sma = slide_dbl(cpi_1mon, mean, .before = 3, .complete = TRUE)) %>%
+  select(-Year, -Period, -Label, -month)
 
+#Adding a moving average.
 cpi_df <- cpi_df %>%
-  mutate(cpi_monthly = (cpi - lag(cpi)) / lag(cpi))%>%
-  mutate(cpi_sma = slide_dbl(cpi_monthly, mean, .before = 3, .complete = TRUE))
+  mutate(cpi_sma = slide_dbl(cpi_1mon, mean, .before = 3, .complete = TRUE))
 ```
 Creating a normalized version of the indexes in order to plot them together.
 
 ```{r}
-all_sets_df <- merge(long_ppi_data, pcepi_df, by = "date")
+all_sets_df <- merge(ppi_df, pcepi_df, by = "date")
 
 all_sets_df <- merge(all_sets_df, cpi_df, by = "date")
 
@@ -106,22 +96,25 @@ all_sets_df <- merge(all_sets_df, cpi_df, by = "date")
 # base_core <- all_sets_df$core_items[all_sets_df$date == as.Date('2019-01-01')]
 # base_cpi <- all_sets_df$cpi[all_sets_df$date == as.Date('2019-01-01')]
 
-specific_date <- as.Date('2019-01-01')
+#sets the date for the zero base
+specific_date <- as.Date('2010-01-01')
 
+#doing a zero base
 base_values <- all_sets_df %>%
   filter(date == specific_date) %>%
-  summarise(across(c(Value, all_items, core_items, cpi), ~ ifelse(is.na(.), NA_real_, .))) %>%
+  summarise(across(c(ppi, all_items, core_items, cpi), ~ ifelse(is.na(.), NA_real_, .))) %>%
   unlist()
 
+#combining into the zero base
 all_sets_df <- all_sets_df %>%
-  mutate(across(c(Value, all_items, core_items, cpi),
+  mutate(across(c(ppi, all_items, core_items, cpi),
                 ~ . - base_values[cur_column()],
                 .names = 'zero_based_{.col}')) %>%
-  filter(!if_any(c(zero_based_Value, zero_based_all_items, zero_based_core_items, zero_based_cpi), is.na))
+  filter(!if_any(c(zero_based_ppi, zero_based_all_items, zero_based_core_items, zero_based_cpi), is.na))
 
-
+#adding a normalized set of values
 all_sets_df <-all_sets_df %>%
-  mutate(ppi_norm = (Value - min(Value)) / (max(Value) - min(Value)),
+  mutate(ppi_norm = (ppi - min(ppi)) / (max(ppi) - min(ppi)),
          all_items_norm = (all_items - min(all_items)) / (max(all_items) - min(all_items)),
          core_norm = (core_items - min(core_items)) / (max(core_items) - min(core_items)),
          cpi_norm = (cpi - min(cpi)) / (max(cpi) - min(cpi)))
@@ -142,30 +135,14 @@ ggplot(data=all_sets_df)+
             color = "darkgreen")+
   theme_minimal()
 ```
-
 ```{r}
 ggplot(data=all_sets_df)+
-  geom_line(aes(x=date, y = zero_based_all_items))+
-  geom_line(aes(x=date, y = zero_based_core_items),
-            color= "blue") +
-  geom_line(aes(x=date, y = zero_based_Value),
-            color = "red")+
-  geom_line(aes(x = date, y = zero_based_cpi),
-            color = "darkgreen")+
-  theme_minimal()
-```
-
-
-```{r}
-ggplot(data=pcepi_df)+
   geom_line(aes(x=date, y = all_items_monthly*100))+
   geom_line(aes(x=date, y = core_items_monthly*100),
             color= "blue")+
-   geom_line(data=long_ppi_data, 
-             aes(x=date, y = ppi_monthly*100),
+   geom_line( aes(x=date, y = ppi_1mon*100),
              color = "red")+
-   geom_line(data = cpi_df,
-            aes(x = date, y = cpi_monthly*100),
+   geom_line(aes(x = date, y = cpi_1mon*100),
             color = "darkgreen")+
   theme_minimal()
 ```
@@ -173,17 +150,15 @@ ggplot(data=pcepi_df)+
 I should do a moving average of these numbers to smooth them out a bit. 
 
 ```{r}
-ggplot(data=pcepi_df)+
+ggplot(data=all_sets_df)+
   geom_line(aes(x=date, y = all_items_sma*100))+
   geom_line(aes(x=date, y = core_items_sma*100),
             color= "blue",
             size= 1,
             alpha = 0.5)+
-   geom_line(data=long_ppi_data, 
-             aes(x=date, y = ppi_sma*100),
+   geom_line(aes(x=date, y = ppi_sma*100),
              color = "red")+
-   geom_line(data = cpi_df,
-            aes(x = date, y = cpi_sma*100),
+   geom_line(aes(x = date, y = cpi_sma*100),
             color = "darkgreen")+
   theme_minimal()
 ```
@@ -194,14 +169,14 @@ Maybe add at Smoothed Moving Average (smma)
 
 ```{r}
 #PPI to PCEPI Cross-Correlation Function CCF
-ccf_values_ppi_pcepi = ccf(long_ppi_data$Value, pcepi_df$core_items, lag.max = 12, main = "Cross-Correlation Function CCF")
+ccf_values_ppi_pcepi = ccf(ppi_df$ppi, pcepi_df$core_items, lag.max = 12, main = "Cross-Correlation Function CCF")
 
 ccf_values_ppi_pcepi
 ```
 
 ```{r}
 #PPI to CPI Cross-Correlation Function CCF
-ccf_values_ppi_cpi = ccf(long_ppi_data$Value, cpi_df$cpi, lag.max = 12, main = "Cross-Correlation Function CCF")
+ccf_values_ppi_cpi = ccf(ppi_df$ppi, cpi_df$cpi, lag.max = 12, main = "Cross-Correlation Function CCF")
 
 ccf_values_ppi_cpi
 ```
@@ -209,8 +184,8 @@ ccf_values_ppi_cpi
 
 #Granger Causality testing to see if the PPI really predicts other inflation measures.
 ```{r}
-library(lmtest) #for granger testing
-granger_result <- grangertest(pcepi_df$core_items ~ long_ppi_data$Value, order = 1) # 'order' is the number of lags to include
+library(lmtest) #for granger testing #need to adjust the pcecpi start date to omit 2009.
+granger_result <- grangertest(pcepi_df$core_items ~ ppi_df$ppi, order = 1) # 'order' is the number of lags to include
 
 # View the results
 print(granger_result)
@@ -219,16 +194,16 @@ print(granger_result)
 Trying to see the optimal order number via Akaike Information Criterion (AIC)
 
 ```{r}
-combined_df <- merge(long_ppi_data, pcepi_df, by = "date")
+combined_df <- merge(ppi_df, pcepi_df, by = "date")
 # Placeholder for AIC values and corresponding lags
 aic_values <- setNames(rep(NA, 6), 1:6)
 
 for (i in 1:6) {
   # Dynamically create 'lagged_Value' within the loop to reflect the current lag being tested
   temp_df <- combined_df %>%
-    mutate(lagged_Value = lag(Value, i))
+    mutate(lagged_ppi = lag(ppi, i))
 
-  model <- lm(core_items ~ lagged_Value + lag(core_items, i), data = temp_df)
+  model <- lm(core_items ~ lagged_ppi + lag(core_items, i), data = temp_df)
   aic_values[i] <- AIC(model)
 }
 
@@ -247,7 +222,7 @@ Since the optimal lag is 1 month, it indicates short-term dynamics between PPI a
 
 ```{r}
 library(lmtest) #for granger testing
-granger_result_cpi <- grangertest(cpi_df$cpi ~ long_ppi_data$Value, order = 12) # 'order' is the number of lags to include
+granger_result_cpi <- grangertest(cpi_df$cpi ~ ppi_df$ppi, order = 12) # 'order' is the number of lags to include
 
 # View the results
 print(granger_result_cpi)
@@ -285,8 +260,7 @@ ggplot(data_for_plot, aes(x = lags, y = p_values, color = significance_levels)) 
 combined_df <- combined_df %>%
   arrange(date) %>%
   mutate(lagged_PPI_3m = lag(Value, 3),
-         lagged_PPI_2m = lag(Value, 2),
-         lagged_PPI_6m = lag(Value, 6))
+         lagged_PPI_2m = lag(Value, 2))
 
 # Split the data into training and test sets
 # Assuming the test set starts from January 2022
